@@ -204,7 +204,8 @@ public class AlarmActivity extends AppCompatActivity
         if (mIsPowerOffAlarm) {
             // if we are invoked by a power off alarm, we may have just missed the alarm
             // time if the boot took unusually long (we normally wake up two minutes early)
-            mAlarmInstance = AlarmInstance.getFirstMissedInstance(mContext.getContentResolver());
+
+            Settings.System.putInt(mContext.getContentResolver(), POWER_OFF_ALARM_MODE, 1);
         } else if (intentData != null) {
             long instanceId = AlarmInstance.getId(intentData);
             mAlarmInstance = AlarmInstance.getInstance(this.getContentResolver(), instanceId);
