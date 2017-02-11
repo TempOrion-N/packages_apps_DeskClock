@@ -269,4 +269,8 @@ final class CityModel {
             }
         }
     }
+
+    void cleanCityMap() {
+        mCityMap = null;
+    }
 }

@@ -16,7 +16,10 @@
 
 package com.android.deskclock.worldclock;
 
+import android.app.AlertDialog;
 import android.content.Context;
+import android.content.DialogInterface;
+import android.content.res.Resources;
 import android.media.AudioManager;
 import android.os.Bundle;
 import android.support.v7.widget.SearchView;
@@ -35,8 +38,10 @@ import android.widget.CompoundButton;
 import android.widget.ListView;
 import android.widget.SectionIndexer;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import com.android.deskclock.BaseActivity;
+import com.android.deskclock.LogUtils;
 import com.android.deskclock.R;
 import com.android.deskclock.Utils;
 import com.android.deskclock.actionbarmenu.AbstractMenuItemController;
@@ -47,6 +52,8 @@ import com.android.deskclock.actionbarmenu.SearchMenuItemController;
 import com.android.deskclock.actionbarmenu.SettingMenuItemController;
 import com.android.deskclock.data.City;
 import com.android.deskclock.data.DataModel;
+import com.android.deskclock.worldclock.db.DbCities;
+import com.android.deskclock.worldclock.db.DbCity;
 
 import java.util.ArrayList;
 import java.util.Calendar;
@@ -71,7 +78,8 @@ import java.util.TimeZone;
  * As a result, {@link #onResume()} conservatively refreshes itself from the backing
  * {@link DataModel} which may have changed since this activity was last displayed.
  */
-public final class CitySelectionActivity extends BaseActivity {
+public final class CitySelectionActivity extends BaseActivity
+        implements AddCityDialog.OnCitySelected {
 
     /** The list of all selected and unselected cities, indexed and possibly filtered. */
     private ListView mCitiesList;
@@ -85,10 +93,15 @@ public final class CitySelectionActivity extends BaseActivity {
     /** Menu item controller for search view. */
     private SearchMenuItemController mSearchMenuItemController;
 
+    private LayoutInflater mFactory;
+    private AddCityDialog mAddCityDialog = null;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setVolumeControlStream(AudioManager.STREAM_ALARM);
+
+        mFactory = LayoutInflater.from(this);
 
         setContentView(R.layout.cities_activity);
         mSearchMenuItemController =
@@ -108,6 +121,7 @@ public final class CitySelectionActivity extends BaseActivity {
         mCitiesAdapter = new CityAdapter(this, mSearchMenuItemController);
         mActionBarMenuManager.addMenuItemController(new NavUpMenuItemController(this))
                 .addMenuItemController(mSearchMenuItemController)
+                .addMenuItemController(new AddCityMenuItemController())
                 .addMenuItemController(new SortOrderMenuItemController())
                 .addMenuItemController(new SettingMenuItemController(this))
                 .addMenuItemController(MenuItemControllerFactory.getInstance()
@@ -198,7 +212,7 @@ public final class CitySelectionActivity extends BaseActivity {
      * </pre>
      */
     private static final class CityAdapter extends BaseAdapter implements View.OnClickListener,
-            CompoundButton.OnCheckedChangeListener, SectionIndexer {
+            CompoundButton.OnCheckedChangeListener, SectionIndexer, View.OnLongClickListener {
 
         /** The type of the single optional "Selected Cities" header entry. */
         private static final int VIEW_TYPE_SELECTED_CITIES_HEADER = 0;
@@ -240,6 +254,9 @@ public final class CitySelectionActivity extends BaseActivity {
         /** Menu item controller for search. Search query is maintained here. */
         private final SearchMenuItemController mSearchMenuItemController;
 
+        private final int mNormalCityFgColor;
+        private final int mUserDefinedCityFgColor;
+
         public CityAdapter(Context context, SearchMenuItemController searchMenuItemController) {
             mContext = context;
             mSearchMenuItemController = searchMenuItemController;
@@ -259,6 +276,10 @@ public final class CitySelectionActivity extends BaseActivity {
                 pattern12 = pattern12.replaceAll("h", "hh");
             }
             mPattern12 = pattern12;
+
+            Resources res = context.getResources();
+            mNormalCityFgColor = res.getColor(R.color.clock_white);
+            mUserDefinedCityFgColor = res.getColor(R.color.red);
         }
 
         @Override
@@ -321,6 +342,11 @@ public final class CitySelectionActivity extends BaseActivity {
                     holder.name.setText(city.getName(), TextView.BufferType.SPANNABLE);
                     holder.time.setText(getTimeCharSequence(timeZone));
 
+                    view.setOnLongClickListener(this);
+                    boolean bIsUserAdded = city.getId().length()> 2
+                            && "UD".equalsIgnoreCase(city.getId().substring(0,2));
+                    holder.name.setTextColor(bIsUserAdded ? mUserDefinedCityFgColor : mNormalCityFgColor);
+
                     final boolean showIndex = getShowIndex(position);
                     holder.index.setVisibility(showIndex ? View.VISIBLE : View.INVISIBLE);
                     if (showIndex) {
@@ -374,6 +400,49 @@ public final class CitySelectionActivity extends BaseActivity {
         public void onClick(View v) {
             final CheckBox b = (CheckBox) v.findViewById(R.id.city_onoff);
             b.setChecked(!b.isChecked());
+        }
+
+        public boolean onLongClick(View v) {
+            final CityItemHolder holder = (CityItemHolder) v.getTag();
+            City c = (City)holder.selected.getTag();
+            if (c != null && "UD".equalsIgnoreCase(c.getId().substring(0,2))) {
+                deleteCity(c);
+                return true;
+            }
+            return false;
+        }
+
+        private void deleteCity(final City c) {
+            AlertDialog.Builder builder = new AlertDialog.Builder(mContext);
+            builder.setTitle(R.string.cities_delete_city_title);
+            builder.setMessage(mContext.getString(R.string.cities_delete_city_msg, c.getName()));
+            builder.setPositiveButton(mContext.getString(android.R.string.ok),
+                    new DialogInterface.OnClickListener() {
+                        @Override
+                        public void onClick(DialogInterface dialog, int which) {
+                            int id = Integer.parseInt(c.getId().substring(2));
+                            if (DbCities.deleteCity(mContext, id) > 0) {
+                                // Remove from the list and from the selection
+                                mUserSelectedCities.remove(c.getId());
+
+                                //clean cities map, recreate mCityMap
+                                DataModel.getDataModel().cleanCityMap();
+
+                                // set the selected cities in order to recreate list content
+                                DataModel.getDataModel().setSelectedCities(getSelectedCities());
+
+                                //refresh the list with the new data
+                                refresh();
+                            } else {
+                                // Something went wrong
+                                Toast.makeText(mContext, R.string.cities_delete_city_failed,
+                                        Toast.LENGTH_SHORT).show();
+                            }
+                        }
+                    });
+            builder.setNegativeButton(mContext.getString(android.R.string.cancel), null);
+            AlertDialog dialog = builder.create();
+            dialog.show();
         }
 
         @Override
@@ -593,6 +662,126 @@ public final class CitySelectionActivity extends BaseActivity {
 
             // Honor the new sort order in the adapter.
             mCitiesAdapter.filter(mSearchMenuItemController.getQueryText());
+            return true;
+        }
+    }
+
+    private class AddCityMenuItemController extends AbstractMenuItemController {
+        public int getId() {
+            return R.id.menu_item_add;
+        }
+
+        public void showMenuItem(Menu menu) {
+            final MenuItem addMenuItem = menu.findItem(R.id.menu_item_add);
+            addMenuItem.setVisible(true);
+        }
+
+        public boolean handleMenuItemClick(MenuItem item) {
+            LogUtils.d(LogUtils.LOGTAG, "AddCityMenuItemController: add city menu is clicked");
+            mAddCityDialog = new AddCityDialog(CitySelectionActivity.this,
+                    mFactory, CitySelectionActivity.this);
+            try {
+                mAddCityDialog.show();
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+
+            return true;
+        }
+    }
+
+    @Override
+    public void onCitySelected(String name, String tz) {
+        LogUtils.d(LogUtils.LOGTAG, "onCitySelected: name = " + name + " tz = " + tz);
+
+        //validity check
+        if(name == null || name.isEmpty()
+                || tz == null || tz.isEmpty()) {
+            LogUtils.d(LogUtils.LOGTAG, "onCitySelected:value is invalid");
+            return;
+        }
+
+        //dismiss the dialog
+        if(mAddCityDialog != null) {
+            mAddCityDialog.dismiss();
+            mAddCityDialog = null;
+        }
+
+        // If city name and timezone already exists in DB, give toast prompt
+        if (cityRecordIsExistInDB(name, tz)) {
+            //prompt the toast
+            Toast.makeText(this, R.string.cities_add_already_exists,
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        //insert new record to DB
+        if (insertNewRecordToClockDB(name, tz)) {
+            //clean cities map, recreate mCityMap
+            DataModel.getDataModel().cleanCityMap();
+
+            //recreate allCities selectedCities list
+            DataModel.getDataModel().setSelectedCities(mCitiesAdapter.getSelectedCities());
+
+            //refresh the list with the new data
+            mCitiesAdapter.refresh();
+            mCitiesList.invalidate();
+        } else {
+            // Something went wrong
+            Toast.makeText(this, R.string.cities_add_city_failed,
+                    Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    @Override
+    public void onCancelCitySelection() {
+        //Dismiss Dialog
+        if(mAddCityDialog != null) {
+            mAddCityDialog.dismiss();
+            mAddCityDialog = null;
+        }
+    }
+
+    private boolean cityRecordIsExistInDB(String name, String timezone) {
+        //param check
+        if (name == null || name.isEmpty()
+                || timezone == null || timezone.isEmpty()) {
+            LogUtils.d(LogUtils.LOGTAG, "cityRecordIsExistInDB: param is invalid" +
+                    " name = " + name + " timezone = " + timezone);
+            return false;
+        }
+
+        List<City> allCityList = DataModel.getDataModel().getAllCities();
+        for (int i = 0; i < allCityList.size(); i++) {
+            City c = allCityList.get(i);
+            if(c != null && c.getId() != null) {
+                if (c.getName().equalsIgnoreCase(name)
+                        && c.getTimeZone().getID().equalsIgnoreCase(timezone)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    //insert new record to DB, return whether succeed or not
+    private boolean insertNewRecordToClockDB(String name, String tz) {
+        //param check
+        if (name == null || name.isEmpty()
+                || tz == null || tz.isEmpty()) {
+            LogUtils.d(LogUtils.LOGTAG, "insertNewRecordToClockDB: param is invalid" +
+                    " name = " + name + " timezone = " + tz);
+            return false;
+        }
+
+        DbCity dbCity = new DbCity();
+        dbCity.name = name;
+        dbCity.tz = tz;
+        long id = DbCities.addCity(this, dbCity);
+        if (id < 0) {
+            return false;
+        } else {
             return true;
         }
     }

@@ -27,9 +27,12 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
 import android.os.PowerManager;
+import android.os.SystemProperties;
+
 import android.preference.PreferenceManager;
 import android.provider.Settings;
 import android.support.v4.app.NotificationManagerCompat;
+import android.telephony.TelephonyManager;
 import android.text.format.DateFormat;
 import android.widget.Toast;
 
@@ -47,7 +50,9 @@ import com.android.deskclock.provider.AlarmInstance;
 import com.android.deskclock.settings.SettingsActivity;
 
 import java.util.Calendar;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * This class handles all the state changes for alarm instances. You need to
@@ -135,12 +140,20 @@ public final class AlarmStateManager extends BroadcastReceiver {
     // Buffer time in seconds to fire alarm instead of marking it missed.
     public static final int ALARM_FIRE_BUFFER = 15;
 
+    // key to to retrieve pending alarm set
+    public static final String ALARM_PENDING_ALARM_KEY = "pending.alarm.key";
+
     // A factory for the current time; can be mocked for testing purposes.
     private static CurrentTimeFactory sCurrentTimeFactory;
 
     // Schedules alarm state transitions; can be mocked for testing purposes.
     private static StateChangeScheduler sStateChangeScheduler =
             new AlarmManagerStateChangeScheduler();
+
+    private static final String ACTION_POWER_ON_ALERT =
+            "org.codeaurora.poweronalert.action.POWER_ON_ALERT";
+    private static final String ACTION_POWER_OFF =
+            "org.codeaurora.poweronalert.action.ALARM_POWER_OFF";
 
     private static Calendar getCurrentTime() {
         return sCurrentTimeFactory == null ?
@@ -163,6 +176,16 @@ public final class AlarmStateManager extends BroadcastReceiver {
     }
 
     public static void updateGlobalIntentId(Context context) {
+        SharedPreferences dePrefs = Utils.getDESharedPreferences(context);
+
+        // If there are any pending alarms, do not update the global id - pending alarms
+        // will be ignored by the receivers when the user tries to dismiss or snooze
+        Set<String> alarms = dePrefs.getStringSet(AlarmStateManager.ALARM_PENDING_ALARM_KEY,
+                new HashSet<String>());
+        if (alarms.size() > 0) {
+            return;
+        }
+
         SharedPreferences prefs = Utils.getDefaultSharedPreferences(context);
         int globalId = prefs.getInt(ALARM_GLOBAL_ID_EXTRA, -1) + 1;
         prefs.edit().putInt(ALARM_GLOBAL_ID_EXTRA, globalId).commit();
@@ -176,6 +199,9 @@ public final class AlarmStateManager extends BroadcastReceiver {
      */
     public static void updateNextAlarm(Context context) {
         final AlarmInstance nextAlarm = getNextFiringAlarm(context);
+        if (nextAlarm != null) {
+            schedulePowerOffAlarmInstanceStateChange(context, nextAlarm);
+        }
 
         if (Utils.isPreL()) {
             updateNextAlarmInSystemSettings(context, nextAlarm);
@@ -332,6 +358,11 @@ public final class AlarmStateManager extends BroadcastReceiver {
         sStateChangeScheduler.scheduleInstanceStateChange(ctx, time, instance, newState);
     }
 
+    private static void schedulePowerOffAlarmInstanceStateChange(Context ctx,
+            AlarmInstance instance) {
+        sStateChangeScheduler.schedulePowerOffAlarmInstanceStateChange(ctx, instance);
+    }
+
     /**
      * Cancel all {@link AlarmManager} timers for instance.
      *
@@ -342,6 +373,10 @@ public final class AlarmStateManager extends BroadcastReceiver {
         sStateChangeScheduler.cancelScheduledInstanceStateChange(ctx, instance);
     }
 
+    private static void cancelSchedulePowerOffAlarmInstanceStateChange(Context ctx,
+            AlarmInstance instance) {
+        sStateChangeScheduler.cancelSchedulePowerOffAlarmInstanceStateChange(ctx, instance);
+    }
 
     /**
      * This will set the alarm instance to the SILENT_STATE and update
@@ -515,6 +550,10 @@ public final class AlarmStateManager extends BroadcastReceiver {
 
         // Instance time changed, so find next alarm that will fire and notify system
         updateNextAlarm(context);
+
+        if (isAlarmBoot()) {
+            context.sendBroadcast(new Intent(ACTION_POWER_OFF));
+        }
     }
 
     public static int getSnoozedMinutes(Context context) {
@@ -594,6 +633,11 @@ public final class AlarmStateManager extends BroadcastReceiver {
         instance.mAlarmState = AlarmInstance.DISMISSED_STATE;
         final ContentResolver contentResolver = context.getContentResolver();
         AlarmInstance.updateInstance(contentResolver, instance);
+
+        if (isAlarmBoot()) {
+            context.startActivity(new Intent(ACTION_POWER_ON_ALERT)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        }
     }
 
     /**
@@ -634,6 +678,7 @@ public final class AlarmStateManager extends BroadcastReceiver {
         AlarmService.stopAlarm(context, instance);
         AlarmNotifications.clearNotification(context, instance);
         cancelScheduledInstanceStateChange(context, instance);
+        cancelSchedulePowerOffAlarmInstanceStateChange(context, instance);
         setDismissState(context, instance);
     }
 
@@ -860,6 +905,9 @@ public final class AlarmStateManager extends BroadcastReceiver {
                 break;
             case AlarmInstance.MISSED_STATE:
                 setMissedState(context, instance);
+                if (isAlarmBoot()) {
+                    context.sendBroadcast(new Intent(ACTION_POWER_OFF));
+                }
                 break;
             case AlarmInstance.PREDISMISSED_STATE:
                 setPreDismissState(context, instance);
@@ -925,11 +973,19 @@ public final class AlarmStateManager extends BroadcastReceiver {
                 }
             }
 
-            if (alarmState >= 0) {
-                setAlarmState(context, instance, alarmState);
-            } else {
-                registerInstance(context, instance, true);
+            //If the phone is busy, add the alarm to a string set in shared preferenecs that will be
+            // cleared when the call is ended.
+            if (context.getResources().getBoolean(R.bool.config_delayalarm)) {
+                TelephonyManager mTelephonyManager = (TelephonyManager) context
+                        .getSystemService(Context.TELEPHONY_SERVICE);
+                if ((mTelephonyManager.getCallState() != TelephonyManager.CALL_STATE_IDLE)
+                        && (alarmState == AlarmInstance.FIRED_STATE)) {
+                    pendAlarm(context, uri, alarmState);
+                    return;
+                }
             }
+
+            setChangeAlarmState(context, instance, alarmState);
         } else if (SHOW_AND_DISMISS_ALARM_ACTION.equals(action)) {
             Uri uri = intent.getData();
             AlarmInstance instance = AlarmInstance.getInstance(context.getContentResolver(),
@@ -982,6 +1038,11 @@ public final class AlarmStateManager extends BroadcastReceiver {
                 AlarmInstance instance, int newState);
 
         void cancelScheduledInstanceStateChange(Context context, AlarmInstance instance);
+
+        void schedulePowerOffAlarmInstanceStateChange(Context context, AlarmInstance instance);
+
+        void cancelSchedulePowerOffAlarmInstanceStateChange(Context context,
+                AlarmInstance instance);
     }
 
     /**
@@ -1020,5 +1081,75 @@ public final class AlarmStateManager extends BroadcastReceiver {
                 pendingIntent.cancel();
             }
         }
+
+        @Override
+        public void schedulePowerOffAlarmInstanceStateChange(Context context,
+                AlarmInstance instance) {
+            Intent stateChangePowerOffIntent = createStateChangeIntent(context, ALARM_MANAGER_TAG,
+                    instance, AlarmInstance.POWER_OFF_ALARM_STATE);
+            PendingIntent pendingPowerOffIntent = PendingIntent.getService(context,
+                    instance.hashCode(), stateChangePowerOffIntent, PendingIntent.FLAG_ONE_SHOT);
+
+            final AlarmManager am = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
+            am.setExact(AlarmManager.RTC_POWEROFF_WAKEUP, instance.getAlarmTime().getTimeInMillis(),
+                    pendingPowerOffIntent);
+        }
+
+        @Override
+        public void cancelSchedulePowerOffAlarmInstanceStateChange(Context context,
+                AlarmInstance instance) {
+            PendingIntent pendingPowerOffIntent = PendingIntent.getService(context,
+                    instance.hashCode(),
+                    createStateChangeIntent(context, ALARM_MANAGER_TAG, instance, null),
+                    PendingIntent.FLAG_ONE_SHOT);
+
+            if (pendingPowerOffIntent != null) {
+                AlarmManager am = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
+                am.cancel(pendingPowerOffIntent);
+                pendingPowerOffIntent.cancel();
+            }
+        }
+    }
+
+    /**
+     * Add the alarm to list of pending Alarms to be fired after the call is complete.
+     */
+    private static void pendAlarm(Context context, Uri uri, int alarmState) {
+        LogUtils.v("Pending alarm: " + uri);
+
+        SharedPreferences sp = Utils.getDESharedPreferences(context);
+        Set<String> alarms = sp.getStringSet(ALARM_PENDING_ALARM_KEY, new HashSet<String>());
+
+        // Alarms are stored as "<uri>|<alarmState>"
+        String alarm = uri.toString() + "|" + alarmState;
+
+        HashSet<String> newSet = new HashSet<String>();
+        newSet.addAll(alarms);
+        newSet.add(alarm);
+
+        sp.edit().putStringSet(ALARM_PENDING_ALARM_KEY, newSet).commit();
+    }
+
+    public static void setChangeAlarmState(Context context, AlarmInstance instance,
+                                           int alarmState) {
+        if (alarmState >= 0) {
+            setAlarmState(context, instance, alarmState);
+        } else {
+            // No need to register instance again when alarmState
+            // equals POWER_OFF_ALARM_STATE. POWER_OFF_ALARM_STATE
+            // is an invalid state for rtc power off alarm.
+            if (alarmState == AlarmInstance.POWER_OFF_ALARM_STATE) {
+                return;
+            }
+
+            registerInstance(context, instance, true);
+        }
+    }
+
+    /*
+     * Check if it is alarm boot
+     */
+    public static boolean isAlarmBoot () {
+       return SystemProperties.getBoolean("ro.alarm_boot", false);
     }
 }

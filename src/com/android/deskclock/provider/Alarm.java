@@ -289,7 +289,7 @@ public final class Alarm implements Parcelable, ClockContract.AlarmsColumns {
         if (c.isNull(RINGTONE_INDEX)) {
             // Should we be saving this with the current ringtone or leave it null
             // so it changes when user changes default ringtone?
-            alert = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM);
+            alert = DataModel.getDataModel().getDefaultAlarmRingtoneUri();
         } else {
             alert = Uri.parse(c.getString(RINGTONE_INDEX));
         }
@@ -305,6 +305,18 @@ public final class Alarm implements Parcelable, ClockContract.AlarmsColumns {
         label = p.readString();
         alert = p.readParcelable(null);
         deleteAfterUse = p.readInt() == 1;
+    }
+
+    public Alarm(Cursor c, Uri defaultRingtoneUri) {
+        id = c.getLong(ID_INDEX);
+        enabled = c.getInt(ENABLED_INDEX) == 1;
+        hour = c.getInt(HOUR_INDEX);
+        minutes = c.getInt(MINUTES_INDEX);
+        daysOfWeek = new DaysOfWeek(c.getInt(DAYS_OF_WEEK_INDEX));
+        vibrate = c.getInt(VIBRATE_INDEX) == 1;
+        label = c.getString(LABEL_INDEX);
+        deleteAfterUse = c.getInt(DELETE_AFTER_USE_INDEX) == 1;
+        alert = defaultRingtoneUri;
     }
 
     public String getLabelOrDefault(Context context) {

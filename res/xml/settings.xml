@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Copyright (C) 2009 The Android Open Source Project
+<!-- Copyright (c) 2014, The Linux Foundation. All rights reserved.
+     Not a Contribution.
+
+     Copyright (C) 2009 The Android Open Source Project
 
      Licensed under the Apache License, Version 2.0 (the "License");
      you may not use this file except in compliance with the License.
@@ -44,19 +47,20 @@
     </PreferenceCategory>
 
     <PreferenceCategory
-        android:title="@string/alarm_settings">
+        android:title="@string/alarm_settings"
+        android:key="key_alarm_settings">
         <ListPreference
             android:key="auto_silence"
             android:title="@string/auto_silence_title"
             android:entries="@array/auto_silence_entries"
             android:entryValues="@array/auto_silence_values"
-            android:defaultValue="10"
+            android:defaultValue="@string/default_auto_silence_value"
             android:dialogTitle="@string/auto_silence_title" />
 
        <com.android.deskclock.settings.SnoozeLengthDialog
             android:key="snooze_duration"
             android:title="@string/snooze_duration_title"
-            android:defaultValue="10"/>
+            android:defaultValue="@string/def_snooze_time"/>
 
         <Preference
             android:key="volume_setting"
@@ -75,6 +79,24 @@
             android:entryValues="@array/volume_button_setting_values"
             android:defaultValue="0" />
 
+        <com.android.deskclock.settings.DefaultAlarmToneDialog
+            android:key="default_alarm_tone"
+            android:title="@string/default_alarm_tone_title" />
+
+        <ListPreference
+            android:defaultValue="0"
+            android:dialogTitle="@string/flip_action_title"
+            android:entries="@array/volume_button_setting_entries"
+            android:entryValues="@array/volume_button_setting_values"
+            android:key="flip_action"
+            android:title="@string/flip_action_title" />
+        <ListPreference
+            android:defaultValue="0"
+            android:dialogTitle="@string/shake_action_title"
+            android:entries="@array/volume_button_setting_entries"
+            android:entryValues="@array/volume_button_setting_values"
+            android:key="shake_action"
+            android:title="@string/shake_action_title" />
         <ListPreference
             android:key="week_start"
             android:title="@string/week_start_title"

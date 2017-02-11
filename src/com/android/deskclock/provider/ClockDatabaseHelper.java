@@ -56,7 +56,10 @@ class ClockDatabaseHelper extends SQLiteOpenHelper {
      */
     private static final int VERSION_8 = 8;
 
+    //Setting default alarm to system setting alarm_alert
     // This creates a default alarm at 8:30 for every Mon,Tue,Wed,Thu,Fri
+
+    //fixed ringtone dialog not selected any list item when first enter
     private static final String DEFAULT_ALARM_1 = "(8, 30, 31, 0, 1, '', NULL, 0);";
 
     // This creates a default alarm at 9:30 for every Sat,Sun

@@ -1,4 +1,7 @@
 /*
+ * Copyright (c) 2014, The Linux Foundation. All rights reserved.
+ * Not a Contribution.
+ *
  * Copyright (C) 2013 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -281,6 +284,34 @@ public final class AlarmInstance implements ClockContract.InstancesColumns {
         }
     }
 
+    /**
+     * Get first alarm instance of power off alarm which is the closest missed alarm.
+     *
+     * @param contentResolver to access the content provider
+     */
+    public static AlarmInstance getFirstAlarmInstance(ContentResolver contentResolver) {
+        List<AlarmInstance> alertAlarms = getInstances(contentResolver, null);
+        long currentTime = System.currentTimeMillis();
+
+        AlarmInstance firstAlarm = null;
+        long closestMissAlarmElapse = 0;
+
+        for (AlarmInstance ai : alertAlarms) {
+            long time = currentTime - ai.getAlarmTime().getTimeInMillis();
+
+            if (time < 0) {
+                continue;
+            }
+
+            if (firstAlarm == null || closestMissAlarmElapse > time) {
+                firstAlarm = ai;
+                closestMissAlarmElapse = time;
+            }
+        }
+
+        return firstAlarm;
+    }
+
     // Public fields
     public long mId;
     public int mYear;
@@ -426,7 +457,12 @@ public final class AlarmInstance implements ClockContract.InstancesColumns {
      */
     public Calendar getTimeout(Context context) {
         String timeoutSetting = Utils.getDefaultSharedPreferences(context)
-                .getString(SettingsActivity.KEY_AUTO_SILENCE, DEFAULT_ALARM_TIMEOUT_SETTING);
+                .getString(SettingsActivity.KEY_AUTO_SILENCE, null);
+        if (timeoutSetting == null) {
+            timeoutSetting = context.getResources()
+                    .getString(R.string.default_auto_silence_value);
+        }
+
         int timeoutMinutes = Integer.parseInt(timeoutSetting);
 
         // Alarm silence has been set to "None"
